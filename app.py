@@ -142,85 +142,84 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
     rti = disk_path("ref_tech_in.xlsx")  if on_disk("ref_tech_in.xlsx")  else None
     rto = disk_path("ref_tech_out.xlsx") if on_disk("ref_tech_out.xlsx") else None
 
-    progress = st.progress(0, text="Running pipeline …")
-    try:
-        log_lines = run_pipeline(WORK, month.strip(), rpi, rpo, rti, rto)
-        progress.progress(85, text="Reading output files …")
+    print("=== APP: ENTERED RUN PIPELINE BUTTON ===", flush=True)
+    with st.spinner("Running pipeline …"):
+        try:
+            print("=== APP: CALLING run_pipeline() ===", flush=True)
+            log_lines = run_pipeline(WORK, month.strip(), rpi, rpo, rti, rto)
+            print("=== APP: run_pipeline() RETURNED ===", flush=True)
 
-        print("=== READING OUTPUT FILES ===", flush=True)
-        print(f"uploaded_targets = {uploaded_targets}", flush=True)
-        print(f"WORK = {WORK}", flush=True)
-        print(f"Files in WORK: {os.listdir(WORK)}", flush=True)
+            # Build a results.zip on disk — single source of truth
+            results_zip_path = disk_path("_results.zip")
+            with zipfile.ZipFile(results_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name in uploaded_targets:
+                    src = disk_path(name)
+                    if os.path.exists(src):
+                        zf.write(src, name)
+                        print(f"=== APP: zipped {name}", flush=True)
 
-        outputs = {}
-        for name in uploaded_targets:
-            p = disk_path(name)
-            exists = os.path.exists(p)
-            print(f"  Checking {name}: exists={exists}", flush=True)
-            if exists:
-                with open(p, "rb") as f:
-                    outputs[name] = f.read()
-                print(f"    Read {len(outputs[name])} bytes", flush=True)
+            # Persist month + log to disk for cross-rerun retrieval
+            with open(disk_path("_run_month.txt"), "w") as f:
+                f.write(month.strip())
+            with open(disk_path("_log.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(log_lines))
+            print("=== APP: results.zip written ===", flush=True)
+        except Exception as e:
+            import traceback, sys
+            tb = traceback.format_exc()
+            print("=== PIPELINE EXCEPTION ===", flush=True)
+            print(tb, flush=True)
+            sys.stdout.flush()
+            st.error(f"❌ Pipeline failed: {e}")
+            with st.expander("🔍 Error details", expanded=True):
+                st.code(tb, language="python")
 
-        print(f"=== OUTPUTS COLLECTED: {len(outputs)} files ===", flush=True)
-
-        st.session_state.outputs   = outputs
-        st.session_state.log_lines = log_lines
-        st.session_state.run_month = month.strip()
-        progress.progress(100, text="Done!")
-        progress.empty()
-        st.rerun()
-    except Exception as e:
-        progress.empty()
-        import traceback, sys
-        tb = traceback.format_exc()
-        print("=== PIPELINE EXCEPTION ===", flush=True)
-        print(tb, flush=True)
-        sys.stdout.flush()
-        st.error(f"❌ Pipeline failed: {e}")
-        with st.expander("🔍 Error details", expanded=True):
-            st.code(tb, language="python")
-
-# ── Download section (persists across reruns) ─────────────────────────────────
-if st.session_state.outputs:
+# ── Download section — disk-backed, no session_state needed ───────────────────
+if on_disk("_results.zip"):
     st.divider()
-    st.success(f"✅ Pipeline complete for **{st.session_state.run_month}** — download below")
+    run_month_path = disk_path("_run_month.txt")
+    run_month = open(run_month_path).read().strip() if os.path.exists(run_month_path) else "Unknown"
+    st.success(f"✅ Pipeline complete for **{run_month}** — download below")
 
-    # ZIP
-    zip_buf = BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, data in st.session_state.outputs.items():
-            zf.writestr(name, data)
-    zip_buf.seek(0)
+    with open(disk_path("_results.zip"), "rb") as f:
+        zip_bytes = f.read()
 
     st.download_button(
-        f"⬇️  Download All as ZIP — {st.session_state.run_month}.zip",
-        data=zip_buf,
-        file_name=f"Stock Reports - {st.session_state.run_month}.zip",
+        f"⬇️  Download All as ZIP — {run_month}.zip",
+        data=zip_bytes,
+        file_name=f"Stock Reports - {run_month}.zip",
         mime="application/zip",
         type="primary",
         use_container_width=True,
         key="zip_dl",
     )
 
-    st.markdown("**Or download individually:**")
-    cols = st.columns(len(st.session_state.outputs))
-    for col, (name, data) in zip(cols, st.session_state.outputs.items()):
-        with col:
-            st.download_button(
-                f"⬇️  {name.replace('.xlsx','')}",
-                data=data,
-                file_name=name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"dl_{name}",
-            )
+    # Individual downloads — read each file from disk
+    individual = [n for n in ["AFA PAC Stock In.xlsx", "AFA PAC Stock Out.xlsx",
+                              "AFA Tech Stock In.xlsx", "AFA Tech Stock Out.xlsx"]
+                  if on_disk(n)]
+    if individual:
+        st.markdown("**Or download individually:**")
+        cols = st.columns(len(individual))
+        for col, name in zip(cols, individual):
+            with col:
+                with open(disk_path(name), "rb") as f:
+                    st.download_button(
+                        f"⬇️  {name.replace('.xlsx','')}",
+                        data=f.read(),
+                        file_name=name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key=f"dl_{name}",
+                    )
 
-    with st.expander("📋 Pipeline Log", expanded=False):
-        st.code("\n".join(st.session_state.log_lines or []), language="")
+    log_path = disk_path("_log.txt")
+    if os.path.exists(log_path):
+        with st.expander("📋 Pipeline Log", expanded=False):
+            with open(log_path, encoding="utf-8") as f:
+                st.code(f.read(), language="")
 
     if st.button("🔄 Clear & start over", use_container_width=True):
-        # Wipe disk + state
         try: shutil.rmtree(WORK)
         except: pass
         for k in list(st.session_state.keys()):
