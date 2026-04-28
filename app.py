@@ -1,7 +1,6 @@
 """
 app.py — AFA Stock Report Pipeline Web UI
 Run locally:  streamlit run app.py
-Deploy:       push to Render as a web service (start command: streamlit run app.py --server.port $PORT --server.address 0.0.0.0)
 """
 
 import os, tempfile, zipfile
@@ -17,11 +16,19 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── Session state init ────────────────────────────────────────────────────────
+if "outputs" not in st.session_state:
+    st.session_state.outputs = None    # dict: filename -> bytes
+if "log_lines" not in st.session_state:
+    st.session_state.log_lines = None
+if "run_month" not in st.session_state:
+    st.session_state.run_month = None
+
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("📊 AFA Monthly Stock Report Pipeline")
 st.markdown(
     "Upload the required files, set the month, then click **Run Pipeline**. "
-    "Processed reports will be available as a ZIP download."
+    "Processed reports will appear below for download."
 )
 st.divider()
 
@@ -29,9 +36,8 @@ st.divider()
 month = st.text_input(
     "📅 Month Label",
     placeholder="e.g. April 2026",
-    help="Must match the month shown on the OneDrive reference files.",
+    help="Used to label the output ZIP",
 )
-
 st.divider()
 
 # ── File uploads ──────────────────────────────────────────────────────────────
@@ -44,7 +50,7 @@ with left:
     pac_out  = st.file_uploader("AFA PAC Stock Out.xlsx",  type=["xlsx"], key="pac_out")
     tech_in  = st.file_uploader("AFA Tech Stock In.xlsx",  type=["xlsx"], key="tech_in")
     tech_out = st.file_uploader("AFA Tech Stock Out.xlsx", type=["xlsx"], key="tech_out")
-    master   = st.file_uploader("Master data.csv",         type=["csv"],  key="master")
+    master   = st.file_uploader("Master data (.csv or .csv.gz)", type=["csv", "gz"], key="master")
 
 with right:
     st.subheader("📋 Reference Files  *(OneDrive exports — optional)*")
@@ -57,17 +63,16 @@ with right:
 st.divider()
 
 # ── Validation ────────────────────────────────────────────────────────────────
-required_fields = {
-    "Month Label":          month,
-    "AFA PAC Stock In":     pac_in,
-    "AFA PAC Stock Out":    pac_out,
-    "AFA Tech Stock In":    tech_in,
-    "AFA Tech Stock Out":   tech_out,
-    "Master data.csv":      master,
+required = {
+    "Month Label":        bool(month and month.strip()),
+    "AFA PAC Stock In":   pac_in   is not None,
+    "AFA PAC Stock Out":  pac_out  is not None,
+    "AFA Tech Stock In":  tech_in  is not None,
+    "AFA Tech Stock Out": tech_out is not None,
+    "Master data":        master   is not None,
 }
-missing = [name for name, val in required_fields.items() if not val]
+missing = [k for k, ok in required.items() if not ok]
 ready   = len(missing) == 0
-
 if missing:
     st.warning(f"⚠️  Still needed: **{', '.join(missing)}**")
 
@@ -76,63 +81,56 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
     with tempfile.TemporaryDirectory() as tmp:
         progress = st.progress(0, text="Saving uploaded files …")
 
-        # Save target files
         def save_upload(f, name):
             if f is None: return None
             path = os.path.join(tmp, name)
             with open(path, "wb") as out:
-                out.write(f.getbuffer())
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk: break
+                    out.write(chunk)
+            f.seek(0)
             return path
 
         save_upload(pac_in,   "AFA PAC Stock In.xlsx")
         save_upload(pac_out,  "AFA PAC Stock Out.xlsx")
         save_upload(tech_in,  "AFA Tech Stock In.xlsx")
         save_upload(tech_out, "AFA Tech Stock Out.xlsx")
-        save_upload(master,   "Master data.csv")
+        master_name = "Master data.csv.gz" if master.name.lower().endswith(".gz") else "Master data.csv"
+        save_upload(master, master_name)
 
-        # Save optional reference files with fixed names
         rpi  = save_upload(ref_pac_in,   "ref_pac_in.xlsx")
         rpo  = save_upload(ref_pac_out,  "ref_pac_out.xlsx")
         rti  = save_upload(ref_tech_in,  "ref_tech_in.xlsx")
         rto  = save_upload(ref_tech_out, "ref_tech_out.xlsx")
 
-        progress.progress(15, text="Running pipeline …")
+        progress.progress(20, text="Running pipeline …")
 
         try:
-            log_lines = run_pipeline(tmp, month, rpi, rpo, rti, rto)
-            progress.progress(90, text="Packaging output files …")
+            log_lines = run_pipeline(tmp, month.strip(), rpi, rpo, rti, rto)
+            progress.progress(85, text="Reading output files …")
 
-            # Bundle outputs into a ZIP
-            zip_buf = BytesIO()
+            # ── Read output files into memory so session_state can hold them ──
             output_names = [
                 "AFA PAC Stock In.xlsx",
                 "AFA PAC Stock Out.xlsx",
                 "AFA Tech Stock In.xlsx",
                 "AFA Tech Stock Out.xlsx",
             ]
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for name in output_names:
-                    path = os.path.join(tmp, name)
-                    if os.path.exists(path):
-                        zf.write(path, name)
-            zip_buf.seek(0)
+            outputs = {}
+            for name in output_names:
+                path = os.path.join(tmp, name)
+                if os.path.exists(path):
+                    with open(path, "rb") as f:
+                        outputs[name] = f.read()
+
+            # Store in session_state so downloads persist across reruns
+            st.session_state.outputs   = outputs
+            st.session_state.log_lines = log_lines
+            st.session_state.run_month = month.strip()
 
             progress.progress(100, text="Done!")
-            st.success("✅ Pipeline completed successfully!")
-
-            # Log expander
-            with st.expander("📋 Pipeline Log", expanded=False):
-                st.code("\n".join(log_lines), language="")
-
-            # Download button
-            st.download_button(
-                label=f"⬇️  Download Processed Reports — {month}.zip",
-                data=zip_buf,
-                file_name=f"Stock Reports - {month}.zip",
-                mime="application/zip",
-                type="primary",
-                use_container_width=True,
-            )
+            progress.empty()
 
         except Exception as e:
             progress.empty()
@@ -140,3 +138,51 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
             with st.expander("🔍 Error details"):
                 import traceback
                 st.code(traceback.format_exc(), language="python")
+
+# ── Show download section if outputs exist (persists across reruns) ───────────
+if st.session_state.outputs:
+    st.divider()
+    st.success(f"✅ Pipeline complete for **{st.session_state.run_month}** — download below")
+
+    # Build ZIP from in-memory bytes
+    zip_buf = BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in st.session_state.outputs.items():
+            zf.writestr(name, data)
+    zip_buf.seek(0)
+
+    # ── Download all as ZIP ──
+    st.download_button(
+        label=f"⬇️  Download All as ZIP — {st.session_state.run_month}.zip",
+        data=zip_buf,
+        file_name=f"Stock Reports - {st.session_state.run_month}.zip",
+        mime="application/zip",
+        type="primary",
+        use_container_width=True,
+        key="zip_dl",
+    )
+
+    # ── Individual file downloads ──
+    st.markdown("**Or download individually:**")
+    cols = st.columns(len(st.session_state.outputs))
+    for col, (name, data) in zip(cols, st.session_state.outputs.items()):
+        with col:
+            st.download_button(
+                label=f"⬇️  {name.replace('.xlsx','')}",
+                data=data,
+                file_name=name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"dl_{name}",
+            )
+
+    # ── Log ──
+    with st.expander("📋 Pipeline Log", expanded=False):
+        st.code("\n".join(st.session_state.log_lines or []), language="")
+
+    # ── Reset button ──
+    if st.button("🔄 Clear & start over"):
+        st.session_state.outputs   = None
+        st.session_state.log_lines = None
+        st.session_state.run_month = None
+        st.rerun()
