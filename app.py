@@ -162,10 +162,14 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
         st.success(f"✅ Pipeline complete for {month.strip()} — see download buttons below")
     except Exception as e:
         progress.empty()
+        import traceback, sys
+        tb = traceback.format_exc()
+        print("=== PIPELINE EXCEPTION ===", flush=True)
+        print(tb, flush=True)
+        sys.stdout.flush()
         st.error(f"❌ Pipeline failed: {e}")
-        with st.expander("🔍 Error details"):
-            import traceback
-            st.code(traceback.format_exc(), language="python")
+        with st.expander("🔍 Error details", expanded=True):
+            st.code(tb, language="python")
 
 # ── Download section (persists across reruns) ─────────────────────────────────
 if st.session_state.outputs:

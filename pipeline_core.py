@@ -115,8 +115,11 @@ def run_pipeline(work_dir, month_label,
     -------
     list[str]  — log lines (display in UI)
     """
+    import sys
     log = []
-    def p(msg): log.append(msg)
+    def p(msg):
+        log.append(msg)
+        print(msg, flush=True)              # ← also stream to stdout for HF container logs
 
     def fp(name): return os.path.join(work_dir, name)   # full path helper
 
@@ -141,7 +144,8 @@ def run_pipeline(work_dir, month_label,
         total_ltr = get_column_letter(total_col)
         desc_col  = afa_col + 1
 
-        unmatched = []
+        unmatched   = []
+        zero_price  = []
         filled_ref = filled_mstr = 0
         last_data_row = data_start - 1
 
@@ -242,12 +246,13 @@ def run_pipeline(work_dir, month_label,
                                 ws_target.cell(row, unit_rm_col).value = f'={ucur_ltr}{row}*{rate}'
                         except: pass
 
-            # Special: AFA 10003157 — Sprocket chain priced RM26/ft, qty in mm
-            # Note → "RM26/ft", ucur = 26, urm = =ucur/304.8 (ft→mm conversion)
+            # Special: AFA 10003157 — Sprocket chain RM26/ft, qty in mm
+            # Convert: 26 / 304.8 = 0.0853 RM/mm — same value in both Cur & MYR, no formula
             if code_key == '10003157':
+                converted = round(26.0 / 304.8, 4)
                 ws_target.cell(row, note_col).value      = 'RM26/ft'
-                ws_target.cell(row, unit_cur_col).value  = 26.00
-                ws_target.cell(row, unit_rm_col).value   = f'={ucur_ltr}{row}/304.8'
+                ws_target.cell(row, unit_cur_col).value  = converted
+                ws_target.cell(row, unit_rm_col).value   = converted
 
             # Unmatched check
             final_supp = ws_target.cell(row, supplier_col).value
@@ -259,6 +264,20 @@ def run_pipeline(work_dir, month_label,
                         cell.fill = YELLOW_FILL
                 unmatched.append((row, afa_val))
 
+            # Zero-price check — flag rows where ucur or urm is exactly 0
+            if afa_val is not None:
+                final_urm = ws_target.cell(row, unit_rm_col).value
+                def _zero(v):
+                    try:
+                        return v is not None and not str(v).startswith('=') and float(v) == 0
+                    except: return False
+                if _zero(final_ucur) or _zero(final_urm):
+                    for c in range(1, min(ws_target.max_column + 1, total_col + 2)):
+                        cell = ws_target.cell(row, c)
+                        if cell.value is not None:
+                            cell.fill = YELLOW_FILL
+                    zero_price.append((row, afa_val))
+
         # Place SUM formula — only when 2+ real data rows
         if last_data_row > data_start:
             sum_row = last_data_row + 1
@@ -269,8 +288,8 @@ def run_pipeline(work_dir, month_label,
                     cell.value = None
             ws_target.cell(sum_row, total_col).value = new_sum
 
-        p(f"    [{sheet_label}] ref={filled_ref} mstr={filled_mstr} unmatched={len(unmatched)}")
-        return unmatched, last_data_row
+        p(f"    [{sheet_label}] ref={filled_ref} mstr={filled_mstr} unmatched={len(unmatched)} zero={len(zero_price)}")
+        return unmatched, zero_price, last_data_row
 
     # ═══════════════════════════════════════════════════════════════════════════
     # STEP 1 — Load master data
@@ -369,7 +388,7 @@ def run_pipeline(work_dir, month_label,
             ws_rv = wb_ref_val[sname]     if wb_ref_val     else None
             ws_rf = wb_ref_formula[sname] if wb_ref_formula else None
 
-            unmatched, _ = fill_sheet(
+            unmatched, zero_price, _ = fill_sheet(
                 wb_target[sname], ws_rv, ws_rf,
                 afa, supp, ucur, urm, total, qty, note, sheet_label=sname
             )
@@ -386,16 +405,26 @@ def run_pipeline(work_dir, month_label,
                     if hi > NOTE_COL:
                         ws_note.merge_cells(start_row=top, start_column=NOTE_COL + 1,
                                             end_row=bot, end_column=hi)
-            ws_note.cell(1, 9).value     = None
-            ws_note.cell(1, 9).font      = Font()
-            ws_note.cell(1, 9).alignment = Alignment()
+            i1_merged = any(mr.min_row <= 1 <= mr.max_row and mr.min_col <= 9 <= mr.max_col
+                            for mr in ws_note.merged_cells.ranges)
+            if not i1_merged:
+                ws_note.cell(1, 9).value     = None
+                ws_note.cell(1, 9).font      = Font()
+                ws_note.cell(1, 9).alignment = Alignment()
 
+            # Build status note — combine unmatched + zero-price warnings
+            parts = []
+            if unmatched:
+                parts.append(f"{len(unmatched)} unmatched (AFA codes: "
+                             f"{', '.join(str(a) for _, a in unmatched)})")
+            if zero_price:
+                parts.append(f"{len(zero_price)} with zero unit price (AFA codes: "
+                             f"{', '.join(str(a) for _, a in zero_price)})")
             note_text = "All items successfully matched and filled from OneDrive reference / master data." \
-                        if not unmatched else \
-                        f"WARNING: {len(unmatched)} unmatched — AFA codes: {', '.join(str(a) for _, a in unmatched)}"
+                        if not parts else "WARNING: " + " | ".join(parts)
             cell = ws_note.cell(1, NOTE_COL)
             cell.value = note_text
-            cell.font  = GREEN_FONT if not unmatched else RED_FONT
+            cell.font  = GREEN_FONT if not parts else RED_FONT
             cell.alignment = Alignment(wrap_text=True, vertical='top')
 
         wb_target.save(target_file)
@@ -448,9 +477,12 @@ def run_pipeline(work_dir, month_label,
                     vertical=ws.cell(r, qty_col).alignment.vertical)
 
             ws.cell(3, total_col).value = 'Inventory Cost (RM)'
-            ws.cell(1, 9).value     = None
-            ws.cell(1, 9).font      = Font()
-            ws.cell(1, 9).alignment = Alignment()
+            i1_merged = any(mr.min_row <= 1 <= mr.max_row and mr.min_col <= 9 <= mr.max_col
+                            for mr in ws.merged_cells.ranges)
+            if not i1_merged:
+                ws.cell(1, 9).value     = None
+                ws.cell(1, 9).font      = Font()
+                ws.cell(1, 9).alignment = Alignment()
 
             seq = 0
             for r in range(4, last_data_row + 1):
@@ -469,9 +501,10 @@ def run_pipeline(work_dir, month_label,
                 except:
                     code = str(v).strip()
                 if code == '10003157':
+                    converted = round(26.0 / 304.8, 4)
                     ws.cell(r, note_col).value     = 'RM26/ft'
-                    ws.cell(r, ucur_col).value     = 26.00
-                    ws.cell(r, urm_col).value      = f'={ucur_ltr_local}{r}/304.8'
+                    ws.cell(r, ucur_col).value     = converted
+                    ws.cell(r, urm_col).value      = converted
                     ws.cell(r, ucur_col).number_format = FMT_ACCT
                     ws.cell(r, urm_col).number_format  = FMT_ACCT
 
