@@ -93,7 +93,7 @@ for slot, save_name, label, types, required in SLOTS:
     else:
         if on_disk(save_name): saved_as = save_name
 
-    star = " *" if required else "  *(optional)*"
+    star = "  *(optional)*"
 
     if saved_as:
         col1, col2 = st.columns([5, 1])
@@ -104,41 +104,39 @@ for slot, save_name, label, types, required in SLOTS:
                 delete_file(save_name, "Master data.csv.gz" if slot == "master" else save_name)
                 st.rerun()
     else:
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            up = st.file_uploader(f"{label}{star}", type=types, key=widget_key(slot),
-                                  label_visibility="visible")
-        with col2:
-            st.markdown("")  # spacer
-            st.markdown("")
-            disabled = up is None
-            if st.button("💾 Save", key=f"save_{slot}", disabled=disabled, use_container_width=True):
-                # Special-case master: keep .gz suffix if present
+        st.markdown(f"**{label}**{star}")
+        up = st.file_uploader(" ", type=types, key=widget_key(slot),
+                              label_visibility="collapsed")
+        # Save button only appears AFTER a file is uploaded — avoids the disabled-state bug
+        if up is not None:
+            if st.button(f"💾 Save  ·  {up.name}",
+                         key=f"save_{slot}", type="primary"):
                 target = save_name
                 if slot == "master" and up.name.lower().endswith(".gz"):
                     target = "Master data.csv.gz"
                 stream_save(up, target)
-                bump(slot)              # reset uploader on next render
+                bump(slot)
                 st.rerun()
 
 st.divider()
 
-# ── Validation ────────────────────────────────────────────────────────────────
+# ── Validation: only Month Label + at least one target file is needed ────────
 required_targets = ["AFA PAC Stock In.xlsx", "AFA PAC Stock Out.xlsx",
                     "AFA Tech Stock In.xlsx", "AFA Tech Stock Out.xlsx"]
-master_ok = on_disk("Master data.csv") or on_disk("Master data.csv.gz")
 
-missing = []
-if not (month and month.strip()): missing.append("Month Label")
-for n in required_targets:
-    if not on_disk(n): missing.append(n.replace(".xlsx", ""))
-if not master_ok: missing.append("Master data")
+uploaded_targets = [n for n in required_targets if on_disk(n)]
+month_ok         = bool(month and month.strip())
+ready            = month_ok and len(uploaded_targets) > 0
 
-if missing:
-    st.warning(f"⚠️  Still needed: **{', '.join(missing)}**")
+if not month_ok:
+    st.warning("⚠️  Please enter a **Month Label** above.")
+elif not uploaded_targets:
+    st.info("ℹ️  Upload at least **one target Excel file** to proceed.")
+else:
+    st.info(f"📦 Ready to process: **{', '.join(n.replace('.xlsx','') for n in uploaded_targets)}**")
 
 # ── Run pipeline ──────────────────────────────────────────────────────────────
-if st.button("🚀 Run Pipeline", disabled=bool(missing), type="primary", use_container_width=True):
+if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_container_width=True):
     rpi = disk_path("ref_pac_in.xlsx")   if on_disk("ref_pac_in.xlsx")   else None
     rpo = disk_path("ref_pac_out.xlsx")  if on_disk("ref_pac_out.xlsx")  else None
     rti = disk_path("ref_tech_in.xlsx")  if on_disk("ref_tech_in.xlsx")  else None
@@ -150,7 +148,7 @@ if st.button("🚀 Run Pipeline", disabled=bool(missing), type="primary", use_co
         progress.progress(85, text="Reading output files …")
 
         outputs = {}
-        for name in required_targets:
+        for name in uploaded_targets:        # only files the user uploaded
             p = disk_path(name)
             if os.path.exists(p):
                 with open(p, "rb") as f:

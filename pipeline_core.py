@@ -242,6 +242,13 @@ def run_pipeline(work_dir, month_label,
                                 ws_target.cell(row, unit_rm_col).value = f'={ucur_ltr}{row}*{rate}'
                         except: pass
 
+            # Special: AFA 10003157 — Sprocket chain priced RM26/ft, qty in mm
+            # Note → "RM26/ft", ucur = 26, urm = =ucur/304.8 (ft→mm conversion)
+            if code_key == '10003157':
+                ws_target.cell(row, note_col).value      = 'RM26/ft'
+                ws_target.cell(row, unit_cur_col).value  = 26.00
+                ws_target.cell(row, unit_rm_col).value   = f'={ucur_ltr}{row}/304.8'
+
             # Unmatched check
             final_supp = ws_target.cell(row, supplier_col).value
             final_ucur = ws_target.cell(row, unit_cur_col).value
@@ -273,23 +280,35 @@ def run_pipeline(work_dir, month_label,
     p("=" * 60)
     p("\n[1] Loading Master data.csv ...")
 
-    master_path = fp('Master data.csv')
-    master_df = pd.read_csv(master_path, encoding='utf-8', on_bad_lines='skip',
-                            dtype={'product_id/default_code': str})
-    master_df['product_id/default_code'] = master_df['product_id/default_code'].str.strip()
-    master_df['create_date'] = pd.to_datetime(master_df['create_date'], errors='coerce')
-    master_df = master_df.sort_values('create_date', ascending=False)
-
+    master_path = fp('Master data.csv.gz') if os.path.exists(fp('Master data.csv.gz')) else fp('Master data.csv')
+    # ── Memory-efficient: stream CSV in chunks, keep only the latest row per code ──
     master_lookup = {}
-    for _, row in master_df.iterrows():
-        code = str(row['product_id/default_code']).strip()
-        if code not in master_lookup:
-            master_lookup[code] = {
-                'supplier':   row['order_id/partner_id/name'] if pd.notna(row['order_id/partner_id/name']) else None,
-                'price_unit': float(row['price_unit']) if pd.notna(row['price_unit']) else None,
-                'currency':   str(row['order_id/currency_id/display_name']).strip()
-                              if pd.notna(row['order_id/currency_id/display_name']) else 'MYR',
-            }
+    latest_date   = {}
+    if not os.path.exists(master_path):
+        p("    No Master data.csv uploaded — skipping master lookup (using ref files only).")
+    else:
+        cols = ['product_id/default_code', 'order_id/partner_id/name',
+                'price_unit', 'order_id/currency_id/display_name', 'create_date']
+        for chunk in pd.read_csv(master_path, encoding='utf-8', on_bad_lines='skip',
+                                 dtype={'product_id/default_code': str},
+                                 usecols=cols, chunksize=50_000):
+            chunk['product_id/default_code'] = chunk['product_id/default_code'].astype(str).str.strip()
+            chunk['create_date'] = pd.to_datetime(chunk['create_date'], errors='coerce')
+            for _, row in chunk.iterrows():
+                code = row['product_id/default_code']
+                if not code or code == 'nan': continue
+                d = row['create_date']
+                prev = latest_date.get(code)
+                if prev is not None and pd.notna(prev) and pd.notna(d) and d <= prev:
+                    continue
+                latest_date[code] = d
+                master_lookup[code] = {
+                    'supplier':   row['order_id/partner_id/name'] if pd.notna(row['order_id/partner_id/name']) else None,
+                    'price_unit': float(row['price_unit']) if pd.notna(row['price_unit']) else None,
+                    'currency':   str(row['order_id/currency_id/display_name']).strip()
+                                  if pd.notna(row['order_id/currency_id/display_name']) else 'MYR',
+                }
+    del latest_date
     p(f"    {len(master_lookup)} unique AFA codes loaded.")
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -439,6 +458,22 @@ def run_pipeline(work_dir, month_label,
                     seq += 1
                     ws.cell(r, 1).value = seq
                     ws.cell(r, 1).alignment = Alignment(horizontal='center', vertical='center')
+
+            # ── Final override: AFA 10003157 — RM26/ft sprocket chain (qty in mm) ──
+            ucur_ltr_local = get_column_letter(ucur_col)
+            for r in range(4, sum_row):
+                v = ws.cell(r, afa_col).value
+                if v is None: continue
+                try:
+                    code = str(int(float(str(v)))) if str(v).replace('.','').isdigit() else str(v).strip()
+                except:
+                    code = str(v).strip()
+                if code == '10003157':
+                    ws.cell(r, note_col).value     = 'RM26/ft'
+                    ws.cell(r, ucur_col).value     = 26.00
+                    ws.cell(r, urm_col).value      = f'={ucur_ltr_local}{r}/304.8'
+                    ws.cell(r, ucur_col).number_format = FMT_ACCT
+                    ws.cell(r, urm_col).number_format  = FMT_ACCT
 
         # AFA Tech Stock Out: restore E1:G1 merge, move A1 content, clear A1
         if 'Tech Stock Out' in fname:
