@@ -13,33 +13,21 @@ from pipeline_core import run_pipeline
 st.set_page_config(page_title="AFA Stock Pipeline", page_icon="📊", layout="wide")
 
 # ── Persistent work directory (survives reruns and page refreshes) ────────────
-# Uses a fixed path so uploaded files & results stay accessible even after rerun.
-def _make_persistent_work():
-    for candidate in ("/tmp/afa_pipeline_work", "/data/afa_pipeline_work",
+# Cached at module level so it runs ONCE per container, not every rerun.
+@st.cache_resource
+def _resolve_work_dir():
+    for candidate in ("/tmp/afa_pipeline_work",
                       os.path.join(tempfile.gettempdir(), "afa_pipeline_work")):
         try:
             os.makedirs(candidate, exist_ok=True)
-            test = os.path.join(candidate, ".write_test")
-            open(test, "w").close()
-            os.remove(test)
             return candidate
         except Exception:
             continue
     return tempfile.mkdtemp(prefix="afa_pipeline_")
 
-if "work_dir" not in st.session_state:
-    st.session_state.work_dir = _make_persistent_work()
-print(f"=== APP: WORK_DIR = {st.session_state.work_dir}", flush=True)
+WORK = _resolve_work_dir()
 if "uploader_nonce" not in st.session_state:
     st.session_state.uploader_nonce = {}     # bumped after save → resets widget
-if "outputs" not in st.session_state:
-    st.session_state.outputs = None
-if "log_lines" not in st.session_state:
-    st.session_state.log_lines = None
-if "run_month" not in st.session_state:
-    st.session_state.run_month = None
-
-WORK = st.session_state.work_dir
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def disk_path(name):  return os.path.join(WORK, name)
@@ -157,34 +145,26 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
     rti = disk_path("ref_tech_in.xlsx")  if on_disk("ref_tech_in.xlsx")  else None
     rto = disk_path("ref_tech_out.xlsx") if on_disk("ref_tech_out.xlsx") else None
 
-    print("=== APP: ENTERED RUN PIPELINE BUTTON ===", flush=True)
-    with st.spinner("Running pipeline …"):
+    with st.spinner("Running pipeline … this may take 30–60 seconds"):
         try:
-            print("=== APP: CALLING run_pipeline() ===", flush=True)
             log_lines = run_pipeline(WORK, month.strip(), rpi, rpo, rti, rto)
-            print("=== APP: run_pipeline() RETURNED ===", flush=True)
 
-            # Build a results.zip on disk — single source of truth
-            results_zip_path = disk_path("_results.zip")
-            with zipfile.ZipFile(results_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Build results.zip on disk — single source of truth
+            with zipfile.ZipFile(disk_path("_results.zip"), "w", zipfile.ZIP_DEFLATED) as zf:
                 for name in uploaded_targets:
                     src = disk_path(name)
                     if os.path.exists(src):
                         zf.write(src, name)
-                        print(f"=== APP: zipped {name}", flush=True)
 
-            # Persist month + log to disk for cross-rerun retrieval
+            # Persist month + log so the download section can read them after rerun
             with open(disk_path("_run_month.txt"), "w") as f:
                 f.write(month.strip())
             with open(disk_path("_log.txt"), "w", encoding="utf-8") as f:
                 f.write("\n".join(log_lines))
-            print("=== APP: results.zip written ===", flush=True)
         except Exception as e:
-            import traceback, sys
+            import traceback
             tb = traceback.format_exc()
-            print("=== PIPELINE EXCEPTION ===", flush=True)
             print(tb, flush=True)
-            sys.stdout.flush()
             st.error(f"❌ Pipeline failed: {e}")
             with st.expander("🔍 Error details", expanded=True):
                 st.code(tb, language="python")
