@@ -147,19 +147,29 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
         log_lines = run_pipeline(WORK, month.strip(), rpi, rpo, rti, rto)
         progress.progress(85, text="Reading output files …")
 
+        print("=== READING OUTPUT FILES ===", flush=True)
+        print(f"uploaded_targets = {uploaded_targets}", flush=True)
+        print(f"WORK = {WORK}", flush=True)
+        print(f"Files in WORK: {os.listdir(WORK)}", flush=True)
+
         outputs = {}
-        for name in uploaded_targets:        # only files the user uploaded
+        for name in uploaded_targets:
             p = disk_path(name)
-            if os.path.exists(p):
+            exists = os.path.exists(p)
+            print(f"  Checking {name}: exists={exists}", flush=True)
+            if exists:
                 with open(p, "rb") as f:
                     outputs[name] = f.read()
+                print(f"    Read {len(outputs[name])} bytes", flush=True)
+
+        print(f"=== OUTPUTS COLLECTED: {len(outputs)} files ===", flush=True)
 
         st.session_state.outputs   = outputs
         st.session_state.log_lines = log_lines
         st.session_state.run_month = month.strip()
         progress.progress(100, text="Done!")
         progress.empty()
-        st.success(f"✅ Pipeline complete for {month.strip()} — see download buttons below")
+        st.rerun()
     except Exception as e:
         progress.empty()
         import traceback, sys
