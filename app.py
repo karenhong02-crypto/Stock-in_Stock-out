@@ -12,9 +12,24 @@ from pipeline_core import run_pipeline
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="AFA Stock Pipeline", page_icon="📊", layout="wide")
 
-# ── Per-session work directory ────────────────────────────────────────────────
+# ── Persistent work directory (survives reruns and page refreshes) ────────────
+# Uses a fixed path so uploaded files & results stay accessible even after rerun.
+def _make_persistent_work():
+    for candidate in ("/tmp/afa_pipeline_work", "/data/afa_pipeline_work",
+                      os.path.join(tempfile.gettempdir(), "afa_pipeline_work")):
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            test = os.path.join(candidate, ".write_test")
+            open(test, "w").close()
+            os.remove(test)
+            return candidate
+        except Exception:
+            continue
+    return tempfile.mkdtemp(prefix="afa_pipeline_")
+
 if "work_dir" not in st.session_state:
-    st.session_state.work_dir = tempfile.mkdtemp(prefix="afa_pipeline_")
+    st.session_state.work_dir = _make_persistent_work()
+print(f"=== APP: WORK_DIR = {st.session_state.work_dir}", flush=True)
 if "uploader_nonce" not in st.session_state:
     st.session_state.uploader_nonce = {}     # bumped after save → resets widget
 if "outputs" not in st.session_state:
