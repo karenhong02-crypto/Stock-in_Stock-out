@@ -159,7 +159,7 @@ if st.button("🚀 Run Pipeline", disabled=not ready, type="primary", use_contai
         st.session_state.run_month = month.strip()
         progress.progress(100, text="Done!")
         progress.empty()
-        st.rerun()
+        st.success(f"✅ Pipeline complete for {month.strip()} — see download buttons below")
     except Exception as e:
         progress.empty()
         st.error(f"❌ Pipeline failed: {e}")
