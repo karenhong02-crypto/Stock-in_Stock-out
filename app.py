@@ -47,6 +47,7 @@ def bump(slot): st.session_state.uploader_nonce[slot] = st.session_state.uploade
 
 def stream_save(uploaded, target_name):
     """Write uploaded file to disk in 1 MB chunks → minimal RAM."""
+    os.makedirs(WORK, exist_ok=True)         # ensure work dir exists every save
     path = disk_path(target_name)
     with open(path, "wb") as out:
         while True:
