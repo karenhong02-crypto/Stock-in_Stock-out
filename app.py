@@ -56,7 +56,9 @@ def file_size(name):
 
 def widget_key(slot): return f"up_{slot}_{st.session_state.uploader_nonce.get(slot, 0)}"
 
-def bump(slot): st.session_state.uploader_nonce[slot] = st.session_state.uploader_nonce.get(slot, 0) + 1
+def bump(slot):
+    """Increment the widget key so the next render gets a fresh, empty uploader."""
+    st.session_state.uploader_nonce[slot] = st.session_state.uploader_nonce.get(slot, 0) + 1
 
 def stream_save(uploaded, target_name):
     """Write uploaded file to disk in 1 MB chunks → minimal RAM."""
@@ -124,16 +126,14 @@ for slot, save_name, label, types, required in SLOTS:
         st.markdown(f"**{label}**{star}")
         up = st.file_uploader(" ", type=types, key=widget_key(slot),
                               label_visibility="collapsed")
-        # Save button only appears AFTER a file is uploaded — avoids the disabled-state bug
+        # Auto-save the moment a file is uploaded → frees session memory immediately
         if up is not None:
-            if st.button(f"💾 Save  ·  {up.name}",
-                         key=f"save_{slot}", type="primary"):
-                target = save_name
-                if slot == "master" and up.name.lower().endswith(".gz"):
-                    target = "Master data.csv.gz"
-                stream_save(up, target)
-                bump(slot)
-                st.rerun()
+            target = save_name
+            if slot == "master" and up.name.lower().endswith(".gz"):
+                target = "Master data.csv.gz"
+            stream_save(up, target)
+            bump(slot)
+            st.rerun()
 
 st.divider()
 
