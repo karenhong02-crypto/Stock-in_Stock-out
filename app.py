@@ -6,6 +6,13 @@ Each file is saved to disk immediately and removed from RAM before the next.
 import os, tempfile, zipfile, shutil
 from io import BytesIO
 
+# ── Force-disable XSRF/CORS BEFORE Streamlit boots ────────────────────────────
+# Must come before `import streamlit` — config is read at import time.
+os.environ["STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION"] = "false"
+os.environ["STREAMLIT_SERVER_ENABLE_CORS"] = "false"
+os.environ["STREAMLIT_SERVER_MAX_UPLOAD_SIZE"] = "500"
+os.environ["STREAMLIT_SERVER_MAX_MESSAGE_SIZE"] = "500"
+
 import streamlit as st
 from pipeline_core import run_pipeline
 
