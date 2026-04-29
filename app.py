@@ -85,8 +85,7 @@ def delete_file(*names):
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("📊 AFA Monthly Stock Report Pipeline")
 st.caption(
-    "**Memory-safe mode**: upload files **one at a time** and click 💾 Save after each. "
-    "The file is moved to disk and your browser memory is freed before the next upload."
+    "Pick all your files in the slots below, then click **Save All Files** to upload them in one batch."
 )
 st.divider()
 
@@ -109,37 +108,57 @@ SLOTS = [
 ]
 
 st.subheader("📥 Upload files")
+st.caption("Drop all the files you want to process into the slots below, then click **Save All Files**. They'll all be saved to disk in one batch.")
 
+# ── Show files already on disk + Remove buttons ──
+already_saved = []
 for slot, save_name, label, types, required in SLOTS:
-    # The master slot may have been saved as .csv or .csv.gz
     saved_as = None
     if slot == "master":
         for n in ("Master data.csv.gz", "Master data.csv"):
             if on_disk(n): saved_as = n; break
     else:
         if on_disk(save_name): saved_as = save_name
-
-    star = "  *(optional)*"
-
     if saved_as:
+        already_saved.append((slot, save_name, label, saved_as))
+
+if already_saved:
+    st.markdown("**Already saved:**")
+    for slot, save_name, label, saved_as in already_saved:
         col1, col2 = st.columns([5, 1])
         with col1:
-            st.success(f"✅ **{label}**{star}  —  `{saved_as}`  ({file_size(saved_as)} saved)")
+            st.success(f"✅ **{label}** — `{saved_as}` ({file_size(saved_as)})")
         with col2:
-            if st.button("🗑️ Remove", key=f"rm_{slot}", use_container_width=True):
+            if st.button("🗑️", key=f"rm_{slot}", use_container_width=True):
                 delete_file(save_name, "Master data.csv.gz" if slot == "master" else save_name)
                 st.rerun()
-    else:
-        st.markdown(f"**{label}**{star}")
-        up = st.file_uploader(" ", type=types, key=widget_key(slot),
-                              label_visibility="collapsed")
-        # Auto-save the moment a file is uploaded → frees session memory immediately
-        if up is not None:
-            target = save_name
-            if slot == "master" and up.name.lower().endswith(".gz"):
-                target = "Master data.csv.gz"
-            stream_save(up, target)
-            bump(slot)
+
+# ── Form-based batch upload (more reliable than auto-save on HF) ──
+saved_slots = {s[0] for s in already_saved}
+remaining = [s for s in SLOTS if s[0] not in saved_slots]
+
+if remaining:
+    st.markdown("**Upload more:**")
+    with st.form(key=f"upload_form_{st.session_state.uploader_nonce.get('form', 0)}",
+                 clear_on_submit=True):
+        uploads = {}
+        for slot, save_name, label, types, required in remaining:
+            uploads[slot] = st.file_uploader(label, type=types, key=f"form_up_{slot}")
+        submitted = st.form_submit_button("💾 Save All Files", type="primary",
+                                          use_container_width=True)
+        if submitted:
+            n_saved = 0
+            for slot, save_name, label, types, required in remaining:
+                up = uploads.get(slot)
+                if up is None: continue
+                target = save_name
+                if slot == "master" and up.name.lower().endswith(".gz"):
+                    target = "Master data.csv.gz"
+                stream_save(up, target)
+                n_saved += 1
+            st.session_state.uploader_nonce["form"] = st.session_state.uploader_nonce.get("form", 0) + 1
+            if n_saved > 0:
+                st.success(f"Saved {n_saved} file(s) to disk")
             st.rerun()
 
 st.divider()
