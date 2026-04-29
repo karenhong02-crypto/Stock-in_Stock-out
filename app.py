@@ -26,6 +26,19 @@ def _resolve_work_dir():
     return tempfile.mkdtemp(prefix="afa_pipeline_")
 
 WORK = _resolve_work_dir()
+
+# One-time startup log to verify config is loaded properly
+@st.cache_resource
+def _log_config_once():
+    try:
+        from streamlit import config as _cfg
+        print(f"[config] maxUploadSize={_cfg.get_option('server.maxUploadSize')}", flush=True)
+        print(f"[config] enableXsrfProtection={_cfg.get_option('server.enableXsrfProtection')}", flush=True)
+        print(f"[config] enableCORS={_cfg.get_option('server.enableCORS')}", flush=True)
+    except Exception as e:
+        print(f"[config] failed: {e}", flush=True)
+    return True
+_log_config_once()
 if "uploader_nonce" not in st.session_state:
     st.session_state.uploader_nonce = {}     # bumped after save → resets widget
 
